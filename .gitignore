@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Caches
+.cache/
+**/.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local model weights
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.msgpack
+*.h5
+*.onnx
+
+# Local model directories
+models/
+backend/models/change_detection/changeformer/models/
+backend/models/grounding/grounding-dino-base/
+backend/models/test_model/
+
+# Large datasets
+*.tif
+*.tiff
+*.geotiff
+*.parquet
+*.tar
+*.tar.gz
+*.zip
+datasets/
+
+# Generated output
+reports/
+datasets/outputs/
+
+# Local screenshots are intentionally tracked
+!screenshots/
+!screenshots/**
+
+# Logs
+*.log
