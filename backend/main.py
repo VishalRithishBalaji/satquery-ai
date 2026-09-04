@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import torch
@@ -15,6 +16,19 @@ from . import tools  # noqa: F401
 
 settings.output_path.mkdir(parents=True,exist_ok=True); settings.report_path.mkdir(parents=True,exist_ok=True)
 app=FastAPI(title=settings.app_name,version=settings.app_version,description='Agentic remote-sensing vision-language assistant')
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://172.31.32.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 class AnalyzeRequest(BaseModel):
     query:str=Field(min_length=1)
     image_paths:list[str]=Field(min_length=1,max_length=3)
