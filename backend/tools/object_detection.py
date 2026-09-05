@@ -4,6 +4,7 @@ from collections import Counter
 
 from ..agent.registry import register_tool
 from ..config.settings import settings
+from ..evidence.confidence import compute_confidence, detection_evidence_strength
 from ..models.object_detection_model import ObjectDetectionModel
 
 
@@ -79,14 +80,6 @@ def object_detection_tool(state):
             == normalized_target
         ]
 
-    if detections:
-        average_confidence = sum(
-            d["confidence"]
-            for d in detections
-        ) / len(detections)
-    else:
-        average_confidence = 0.0
-
     counts = Counter(
         d["label"]
         for d in detections
@@ -128,9 +121,9 @@ def object_detection_tool(state):
 
     return {
         "answer": answer,
-        "confidence": round(
-            average_confidence,
-            4,
+        "confidence": compute_confidence(
+            base=0.4,
+            evidence_strength=detection_evidence_strength(detections),
         ),
         "tool": "object_detection",
         "model": model.model_path,

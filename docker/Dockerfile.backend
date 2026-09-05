@@ -3,7 +3,6 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
-COPY models ./models
-COPY datasets ./datasets
-COPY reports ./reports
+# datasets/outputs, reports/ and the model cache dir are created by the app
+# itself at startup (see backend/main.py) and are not build-time inputs.
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

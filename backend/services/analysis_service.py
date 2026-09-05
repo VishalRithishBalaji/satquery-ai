@@ -5,6 +5,26 @@ from ..preprocessing.validation import validate_image
 from .. import tools  # noqa: F401
 
 
+def _estimate_input_quality(metas: list[dict]) -> float:
+    """Cheap, measurable proxy for input quality: images that failed to
+    open as georeferenced rasters (no CRS) or that are unusually small are
+    weaker evidence than a properly georeferenced, adequately sized image."""
+    if not metas:
+        return 1.0
+    scores = []
+    for meta in metas:
+        score = 1.0
+        if not meta.get("crs"):
+            score -= 0.15
+        width, height = meta.get("width"), meta.get("height")
+        if not width or not height:
+            score -= 0.2
+        elif min(width, height) < 128:
+            score -= 0.15
+        scores.append(max(0.4, score))
+    return sum(scores) / len(scores)
+
+
 def analyze(query, image_paths):
     if not query.strip():
         raise ValueError("Query cannot be empty")
@@ -27,6 +47,7 @@ def analyze(query, image_paths):
         "query": query.strip(),
         "image_paths": image_paths,
         "metadata": metas,
+        "input_quality": _estimate_input_quality(metas),
         "trace": [
             {
                 "stage": "validation",

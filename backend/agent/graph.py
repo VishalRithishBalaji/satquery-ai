@@ -1,4 +1,5 @@
 from langgraph.graph import StateGraph, END
+from .query_analysis import analyze_query
 from .registry import get_tool
 from .router import route
 from .state import AgentState
@@ -6,24 +7,35 @@ from .state import AgentState
 def route_node(s):
     task,tools=route(s['query'],len(s.get('image_paths',[])))
     s['task']=task; s['selected_tools']=tools
-    s.setdefault('trace',[]).append({'stage':'routing','task':task,'tools':tools})
+    intent=analyze_query(s['query'],len(s.get('image_paths',[])))
+    s.setdefault('trace',[]).append({'stage':'routing','task':task,'tools':tools,'operation':intent.operation,'attributes':intent.attributes})
     return s
 
 def exec_node(s):
     results=[]
     for name in s.get('selected_tools',[]):
         try:
-            r=get_tool(name)(s); results.append(r)
+            r=get_tool(name)(s); results.append(r); s['tool_results']=list(results)
             s.setdefault('trace',[]).append({'stage':'tool_execution','tool':name,'model':r.get('model'),'confidence':r.get('confidence'),'status':'success'})
         except Exception as e:
             s.setdefault('trace',[]).append({'stage':'tool_execution','tool':name,'status':'error','error':f'{type(e).__name__}: {e}'})
             if not results: raise
     s['tool_results']=results; return s
 
+_FINALIZE_OWNED_KEYS={'confidence','evidence','answer'}
+
 def finalize_node(s):
     rs=s.get('tool_results',[])
     if not rs: s['answer']='No result.'; s['confidence']=0.0; return s
-    primary=rs[-1]; s['answer']=primary.get('answer','Analysis complete.')
+    primary=rs[-1]
+    # Surface every field the winning tool returned (task_intent, model,
+    # fusion, query_grounding_score, etc.) onto the top-level response, not
+    # just answer/evidence/confidence - those three get their own cross-tool
+    # aggregation below, everything else comes from the primary tool as-is.
+    for key,value in primary.items():
+        if key not in _FINALIZE_OWNED_KEYS:
+            s[key]=value
+    s['answer']=primary.get('answer','Analysis complete.')
     s['evidence']=[e for r in rs for e in r.get('evidence',[])]
     s['confidence']=sum(float(r.get('confidence',0)) for r in rs)/len(rs)
     s.setdefault('trace',[]).append({'stage':'finalize','confidence':s['confidence'],'evidence_count':len(s['evidence'])})

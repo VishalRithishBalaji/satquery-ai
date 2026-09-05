@@ -1,6 +1,25 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  Cpu,
+  Image as ImageIcon,
+  Info,
+  Loader2,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Route,
+  Satellite,
+  ShieldCheck,
+  Sparkles,
+  Waves,
+  XCircle,
+} from "lucide-react";
+import { PolarAngleAxis, RadialBar, RadialBarChart } from "recharts";
 
 const API = "http://127.0.0.1:8000";
 
@@ -14,6 +33,17 @@ type TraceStep = {
   status?: string;
   tool?: string;
   model?: string;
+  task?: string;
+  tools?: string[];
+  operation?: string;
+  attributes?: string[];
+  confidence?: number;
+  error?: string;
+};
+
+type TaskIntent = {
+  operation?: string;
+  attributes?: string[];
 };
 
 type AnalysisResult = {
@@ -25,6 +55,10 @@ type AnalysisResult = {
   selected_tools?: string[];
   evidence?: Evidence[];
   trace?: TraceStep[];
+  task_intent?: TaskIntent;
+  query_grounding_score?: number;
+  low_query_sensitivity?: boolean;
+  retried_for_query_sensitivity?: boolean;
   fusion?: {
     architecture?: string;
     optical_encoder?: string;
@@ -32,6 +66,26 @@ type AnalysisResult = {
     reasoning_model?: string;
   };
 };
+
+const QUERY_PRESETS: { label: string; query: string }[] = [
+  {
+    label: "Optical + SAR fusion",
+    query:
+      "Use the optical and SAR images together to identify built-up areas and water-covered regions. Explain the relevant evidence and provide confidence.",
+  },
+  {
+    label: "Built-up areas",
+    query: "Identify built-up areas in this scene and explain the supporting evidence.",
+  },
+  {
+    label: "Water bodies",
+    query: "Identify water-covered regions in this scene and explain the supporting evidence.",
+  },
+  {
+    label: "What changed?",
+    query: "What changed between these images? Focus on any new or removed structures.",
+  },
+];
 
 function getUploadedPath(data: any): string {
   const first = data?.files?.[0];
@@ -51,6 +105,35 @@ function getUploadedPath(data: any): string {
   throw new Error("Backend did not return an uploaded file path.");
 }
 
+function traceDetail(step: TraceStep): string {
+  const parts: string[] = [];
+
+  if (step.task) parts.push(`task: ${step.task}`);
+  if (step.operation) parts.push(`operation: ${step.operation}`);
+  if (step.attributes && step.attributes.length > 0) parts.push(`focus: ${step.attributes.join(", ")}`);
+  if (step.tool) parts.push(`tool: ${step.tool}`);
+  if (step.model) parts.push(`model: ${step.model}`);
+  if (step.confidence !== undefined) parts.push(`confidence: ${Math.round(step.confidence * 100)}%`);
+  if (step.error) parts.push(`error: ${step.error}`);
+
+  return parts.join(" · ");
+}
+
+function traceIcon(step: TraceStep) {
+  if (step.status === "error") return <XCircle size={16} />;
+
+  switch (step.stage) {
+    case "validation":
+      return <ShieldCheck size={16} />;
+    case "routing":
+      return <Route size={16} />;
+    case "tool_execution":
+      return <Cpu size={16} />;
+    default:
+      return <CheckCircle2 size={16} />;
+  }
+}
+
 function evidenceLabel(type?: string) {
   if (!type) return "Evidence";
 
@@ -63,6 +146,39 @@ function evidenceUrl(path?: string) {
   if (!path) return "";
 
   return `${API}/artifact/${encodeURI(path)}`;
+}
+
+function ConfidenceGauge({ value }: { value?: number }) {
+  const hasValue = value !== undefined;
+  const pct = hasValue ? Math.round((value as number) * 100) : 0;
+  const data = [{ name: "confidence", value: pct }];
+
+  return (
+    <div className="gauge-wrap">
+      <RadialBarChart
+        width={116}
+        height={108}
+        cx={58}
+        cy={58}
+        innerRadius={40}
+        outerRadius={54}
+        barSize={9}
+        data={data}
+        startAngle={90}
+        endAngle={-270}
+      >
+        <defs>
+          <linearGradient id="confidenceGradient" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#58d7ff" />
+            <stop offset="100%" stopColor="#7b91ff" />
+          </linearGradient>
+        </defs>
+        <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
+        <RadialBar background={{ fill: "#0d2036" }} dataKey="value" cornerRadius={8} fill="url(#confidenceGradient)" />
+      </RadialBarChart>
+      <div className="gauge-value">{hasValue ? `${pct}%` : "--"}</div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -82,13 +198,19 @@ export default function Home() {
   const [opticalName, setOpticalName] = useState("");
   const [sarName, setSarName] = useState("");
 
-  const [query, setQuery] = useState(
-    "Use the optical and SAR images together to identify built-up areas and water-covered regions. Explain the relevant evidence and provide confidence."
-  );
+  const [opticalPreview, setOpticalPreview] = useState("");
+  const [sarPreview, setSarPreview] = useState("");
+
+  const [draggingOptical, setDraggingOptical] = useState(false);
+  const [draggingSar, setDraggingSar] = useState(false);
+
+  const [query, setQuery] = useState(QUERY_PRESETS[0].query);
 
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [resultVersion, setResultVersion] = useState(0);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   async function refreshStatus() {
     try {
@@ -121,6 +243,14 @@ export default function Home() {
     const timer = setInterval(refreshStatus, 3000);
 
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (opticalPreview) URL.revokeObjectURL(opticalPreview);
+      if (sarPreview) URL.revokeObjectURL(sarPreview);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadModel() {
@@ -193,6 +323,18 @@ export default function Home() {
     );
     setUploadBusy(true);
 
+    const previewUrl = URL.createObjectURL(file);
+
+    if (type === "optical") {
+      if (opticalPreview) URL.revokeObjectURL(opticalPreview);
+      setOpticalPreview(previewUrl);
+      setOpticalName(file.name);
+    } else {
+      if (sarPreview) URL.revokeObjectURL(sarPreview);
+      setSarPreview(previewUrl);
+      setSarName(file.name);
+    }
+
     try {
       const formData = new FormData();
       formData.append("files", file);
@@ -212,10 +354,8 @@ export default function Home() {
 
       if (type === "optical") {
         setOpticalPath(uploadedPath);
-        setOpticalName(file.name);
       } else {
         setSarPath(uploadedPath);
-        setSarName(file.name);
       }
 
       setMessage(
@@ -230,6 +370,15 @@ export default function Home() {
     } finally {
       setUploadBusy(false);
     }
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>, type: "optical" | "sar") {
+    event.preventDefault();
+    if (type === "optical") setDraggingOptical(false);
+    else setDraggingSar(false);
+
+    const file = event.dataTransfer.files?.[0];
+    if (file) uploadImage(file, type);
   }
 
   async function analyze() {
@@ -279,6 +428,7 @@ export default function Home() {
       }
 
       setResult(data);
+      setResultVersion((v) => v + 1);
       setMessage("Analysis completed successfully.");
     } catch (err) {
       setError(
@@ -291,6 +441,18 @@ export default function Home() {
     }
   }
 
+  async function copyAnswer() {
+    if (!result?.answer) return;
+
+    try {
+      await navigator.clipboard.writeText(result.answer);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard access can be denied by the browser; not worth surfacing as an error.
+    }
+  }
+
   const evidence = result?.evidence ?? [];
 
   return (
@@ -298,11 +460,17 @@ export default function Home() {
 
       {/* HEADER */}
       <header className="topbar">
-        <div>
-          <div className="brand">SATQUERY AI</div>
+        <div className="brand-row">
+          <div className="brand-icon">
+            <Satellite size={22} />
+          </div>
 
-          <div className="subtitle">
-            Interactive Vision-Language Assistant for Multimodal Remote Sensing
+          <div>
+            <div className="brand">SatQuery AI</div>
+
+            <div className="subtitle">
+              Interactive Vision-Language Assistant for Multimodal Remote Sensing
+            </div>
           </div>
         </div>
 
@@ -341,28 +509,34 @@ export default function Home() {
 
           <div className="panel-title">
             <span>01</span>
-            IMAGE INPUT
+            Image Input
           </div>
 
-          <div className="upload-card">
-
-            <div>
-              <div className="label">
-                OPTICAL IMAGE
+          <div
+            className={`dropzone ${draggingOptical ? "dragging" : ""} ${opticalName ? "filled" : ""}`}
+            onClick={() => opticalInput.current?.click()}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDraggingOptical(true);
+            }}
+            onDragLeave={() => setDraggingOptical(false)}
+            onDrop={(event) => handleDrop(event, "optical")}
+          >
+            {opticalPreview ? (
+              <img className="dropzone-thumb" src={opticalPreview} alt="Optical preview" />
+            ) : (
+              <div className="dropzone-icon">
+                <ImageIcon size={22} />
               </div>
+            )}
 
-              <div className="filename">
-                {opticalName || "No optical image selected"}
-              </div>
+            <div className="dropzone-text">
+              <div className="label">OPTICAL IMAGE</div>
+              <strong>{opticalName || "Drop image here or click to browse"}</strong>
+              <span>GeoTIFF, PNG or JPG</span>
             </div>
 
-            <button
-              className="upload-button"
-              onClick={() => opticalInput.current?.click()}
-              disabled={uploadBusy}
-            >
-              {uploadBusy ? "Uploading..." : "Upload Optical"}
-            </button>
+            {uploadBusy && !opticalPath && <Loader2 className="spin" size={18} />}
 
             <input
               ref={opticalInput}
@@ -379,28 +553,33 @@ export default function Home() {
                 event.target.value = "";
               }}
             />
-
           </div>
 
-          <div className="upload-card">
-
-            <div>
-              <div className="label">
-                SAR IMAGE
+          <div
+            className={`dropzone ${draggingSar ? "dragging" : ""} ${sarName ? "filled" : ""}`}
+            onClick={() => sarInput.current?.click()}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDraggingSar(true);
+            }}
+            onDragLeave={() => setDraggingSar(false)}
+            onDrop={(event) => handleDrop(event, "sar")}
+          >
+            {sarPreview ? (
+              <img className="dropzone-thumb" src={sarPreview} alt="SAR preview" />
+            ) : (
+              <div className="dropzone-icon">
+                <Waves size={22} />
               </div>
+            )}
 
-              <div className="filename">
-                {sarName || "No SAR image selected"}
-              </div>
+            <div className="dropzone-text">
+              <div className="label">SAR IMAGE</div>
+              <strong>{sarName || "Drop image here or click to browse"}</strong>
+              <span>GeoTIFF, PNG or JPG</span>
             </div>
 
-            <button
-              className="upload-button"
-              onClick={() => sarInput.current?.click()}
-              disabled={uploadBusy}
-            >
-              {uploadBusy ? "Uploading..." : "Upload SAR"}
-            </button>
+            {uploadBusy && !sarPath && <Loader2 className="spin" size={18} />}
 
             <input
               ref={sarInput}
@@ -417,7 +596,6 @@ export default function Home() {
                 event.target.value = "";
               }}
             />
-
           </div>
 
           {/* MODEL CONTROL */}
@@ -433,6 +611,7 @@ export default function Home() {
                   modelLoaded ? "ready" : "not-ready"
                 }`}
               >
+                <Cpu size={14} />
                 {modelLoaded
                   ? "READY ON GPU"
                   : "MODEL NOT LOADED"}
@@ -450,6 +629,7 @@ export default function Home() {
                   modelBusy
                 }
               >
+                {modelBusy && !modelLoaded ? <Loader2 className="spin" size={15} /> : <Power size={15} />}
                 {modelBusy && !modelLoaded
                   ? "Loading..."
                   : "Load GeoQwen"}
@@ -464,6 +644,7 @@ export default function Home() {
                   modelBusy
                 }
               >
+                {modelBusy && modelLoaded ? <Loader2 className="spin" size={15} /> : <PowerOff size={15} />}
                 {modelBusy && modelLoaded
                   ? "Unloading..."
                   : "Unload GeoQwen"}
@@ -480,7 +661,20 @@ export default function Home() {
 
           <div className="panel-title">
             <span>02</span>
-            ANALYSIS QUERY
+            Analysis Query
+          </div>
+
+          <div className="preset-row">
+            {QUERY_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className="preset-chip"
+                onClick={() => setQuery(preset.query)}
+              >
+                {preset.label}
+              </button>
+            ))}
           </div>
 
           <textarea
@@ -502,6 +696,7 @@ export default function Home() {
               !modelLoaded
             }
           >
+            {analyzing ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
             {analyzing
               ? "Analyzing Imagery..."
               : "Analyze Imagery"}
@@ -509,12 +704,14 @@ export default function Home() {
 
           {message && (
             <div className="message-box">
+              <Info size={15} />
               {message}
             </div>
           )}
 
           {error && (
             <div className="error-box">
+              <AlertTriangle size={15} />
               {error}
             </div>
           )}
@@ -528,45 +725,93 @@ export default function Home() {
 
         <div className="panel-title">
           <span>03</span>
-          ANALYSIS RESULT
+          Analysis Result
         </div>
 
-        <div className="answer-label">
-          ANSWER
-        </div>
+        <div key={resultVersion} className="result-fade">
 
-        <div className="answer-box">
-          {result?.answer ||
-            "Run an analysis to receive an evidence-grounded answer from SatQuery AI."}
-        </div>
+          <div className="answer-header">
+            <div className="answer-label">ANSWER</div>
 
-        <div className="metrics">
-
-          <div className="metric">
-            <span>CONFIDENCE</span>
-            <strong>
-              {result?.confidence !== undefined
-                ? `${Math.round(result.confidence * 100)}%`
-                : "--"}
-            </strong>
+            {result?.answer && (
+              <button className="icon-button" onClick={copyAnswer} type="button">
+                <Copy size={13} />
+                {copied ? "Copied" : "Copy"}
+              </button>
+            )}
           </div>
 
-          <div className="metric">
-            <span>TASK</span>
-            <strong>
-              {result?.task ||
-                result?.tool ||
-                "--"}
-            </strong>
+          {(result?.task_intent?.operation || (result?.task_intent?.attributes?.length ?? 0) > 0 || result?.low_query_sensitivity) && (
+            <div className="query-focus">
+              <span className="query-focus-label">DETECTED FOCUS</span>
+
+              {result?.task_intent?.operation && (
+                <span className="badge operation">
+                  {evidenceLabel(result.task_intent.operation)}
+                </span>
+              )}
+
+              {result?.task_intent?.attributes?.map((attribute) => (
+                <span className="badge" key={attribute}>
+                  {evidenceLabel(attribute)}
+                </span>
+              ))}
+
+              {result?.low_query_sensitivity && (
+                <span className="badge warning">
+                  <AlertTriangle size={11} />
+                  Low query sensitivity - verify answer
+                </span>
+              )}
+
+              {result?.retried_for_query_sensitivity && (
+                <span className="badge">
+                  <RefreshCw size={11} />
+                  Auto-retried for query focus
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="answer-box">
+            {result?.answer ||
+              "Run an analysis to receive an evidence-grounded answer from SatQuery AI."}
           </div>
 
-          <div className="metric">
-            <span>MODEL</span>
-            <strong>
-              {result?.fusion?.reasoning_model ||
-                result?.model ||
-                "GeoQwen"}
-            </strong>
+          <div className="metrics">
+
+            <div className="metric gauge-card">
+              <span>CONFIDENCE</span>
+              <ConfidenceGauge value={result?.confidence} />
+            </div>
+
+            <div className="metric">
+              <span>TASK</span>
+              <strong>
+                {result?.task ||
+                  result?.tool ||
+                  "--"}
+              </strong>
+            </div>
+
+            <div className="metric">
+              <span>MODEL</span>
+              <strong>
+                {result?.fusion?.reasoning_model ||
+                  result?.model ||
+                  "GeoQwen"}
+              </strong>
+            </div>
+
+            <div className="metric">
+              <span>QUERY GROUNDING</span>
+              <strong>
+                {result?.query_grounding_score !== undefined
+                  ? `${Math.round(result.query_grounding_score * 100)}%`
+                  : "--"}
+              </strong>
+            </div>
+
           </div>
 
         </div>
@@ -578,7 +823,7 @@ export default function Home() {
 
         <div className="panel-title">
           <span>04</span>
-          EVIDENCE
+          Evidence
         </div>
 
         <div className="evidence-grid">
@@ -599,15 +844,18 @@ export default function Home() {
                 >
 
                   <div className="evidence-title">
+                    <ImageIcon size={13} />
                     {evidenceLabel(item.type)}
                   </div>
 
                   {src && !isRaster ? (
-                    <img
-                      className="evidence-image"
-                      src={src}
-                      alt={evidenceLabel(item.type)}
-                    />
+                    <a className="evidence-image-link" href={src} target="_blank" rel="noreferrer">
+                      <img
+                        className="evidence-image"
+                        src={src}
+                        alt={evidenceLabel(item.type)}
+                      />
+                    </a>
                   ) : (
                     <div className="evidence-content">
 
@@ -635,6 +883,7 @@ export default function Home() {
             <>
               <div className="evidence-card">
                 <div className="evidence-title">
+                  <ImageIcon size={13} />
                   OPTICAL
                 </div>
 
@@ -645,6 +894,7 @@ export default function Home() {
 
               <div className="evidence-card">
                 <div className="evidence-title">
+                  <Waves size={13} />
                   SAR
                 </div>
 
@@ -655,6 +905,7 @@ export default function Home() {
 
               <div className="evidence-card">
                 <div className="evidence-title">
+                  <CheckCircle2 size={13} />
                   AGREEMENT MAP
                 </div>
 
@@ -665,6 +916,7 @@ export default function Home() {
 
               <div className="evidence-card">
                 <div className="evidence-title">
+                  <XCircle size={13} />
                   DISAGREEMENT MAP
                 </div>
 
@@ -685,41 +937,50 @@ export default function Home() {
 
         <div className="panel-title">
           <span>05</span>
-          EXECUTION TRACE
+          Execution Trace
         </div>
 
         <div className="trace-list">
 
           {result?.trace && result.trace.length > 0 ? (
 
-            result.trace.map((step, index) => (
+            result.trace.map((step, index) => {
+              const failed = step.status === "error";
+              const detail = traceDetail(step);
 
-              <div
-                className="trace-row"
-                key={`${step.stage}-${index}`}
-              >
-
-                <span className="check">
-                  ✓
-                </span>
-
-                <strong>
-                  {step.stage || `Step ${index + 1}`}
-                </strong>
-
-                <span
-                  className={
-                    step.status === "success"
-                      ? "complete"
-                      : "trace-status"
-                  }
+              return (
+                <div
+                  className="trace-row"
+                  key={`${step.stage}-${index}`}
                 >
-                  {step.status || "completed"}
-                </span>
 
-              </div>
+                  <span className={`check${failed ? " failed" : ""}`}>
+                    {traceIcon(step)}
+                  </span>
 
-            ))
+                  <strong>
+                    {step.stage || `Step ${index + 1}`}
+                  </strong>
+
+                  <span
+                    className={
+                      step.status === "success"
+                        ? "complete"
+                        : "trace-status"
+                    }
+                  >
+                    {step.status || "completed"}
+                  </span>
+
+                  {detail && (
+                    <div className="trace-detail">
+                      {detail}
+                    </div>
+                  )}
+
+                </div>
+              );
+            })
 
           ) : (
 

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_env: str = 'development'
     app_version: str = '1.0.0'
     debug: bool = True
+    log_level: str = 'INFO'
     host: str = '127.0.0.1'
     port: int = 8000
     hf_token: str | None = None

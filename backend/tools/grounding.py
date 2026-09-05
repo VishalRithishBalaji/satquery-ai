@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ..agent.registry import register_tool
+from ..evidence.confidence import compute_confidence, detection_evidence_strength
 from ..models.grounding_model import GroundingDINOModel
 from ..preprocessing.raster import raster_to_rgb_image
 
@@ -86,18 +87,11 @@ def grounding_tool(state):
     )
 
     if detections:
-        avg_confidence = sum(
-            d["confidence"]
-            for d in detections
-        ) / len(detections)
-
         answer = (
             f"Located {len(detections)} "
             f"region(s) related to '{target}'."
         )
     else:
-        avg_confidence = 0.0
-
         answer = (
             f"No confident '{target}' region "
             "was found."
@@ -118,9 +112,9 @@ def grounding_tool(state):
 
     return {
         "answer": answer,
-        "confidence": round(
-            avg_confidence,
-            4,
+        "confidence": compute_confidence(
+            base=0.4,
+            evidence_strength=detection_evidence_strength(detections),
         ),
         "tool": "grounding",
         "model": model.model_path,
